@@ -44,8 +44,8 @@ class PesertaViewModel: ObservableObject {
         }
     }
     
-    func registerEvent(pesertaId: String, eventId: String, eventTitle: String, completion: @escaping (Bool, String?) -> Void) {
-        firebaseService.registerEventForPeserta(pesertaId: pesertaId, eventId: eventId, eventTitle: eventTitle) { [weak self] success, error in
+    func registerEvent(pesertaId: String, eventId: String, completion: @escaping (Bool, String?) -> Void) {
+        firebaseService.registerEventForPeserta(pesertaId: pesertaId, eventId: eventId) { [weak self] success, error in
             DispatchQueue.main.async {
                 if success {
                     self?.fetchRegisteredEvents(pesertaId: pesertaId)
@@ -61,6 +61,14 @@ class PesertaViewModel: ObservableObject {
             completion(success, error)
         }
     }
+    
+    func getEventTitle(for eventId: String) -> String {
+        return registeredEvents.first(where: { $0.id == eventId })?.title ?? "Loading Event Info..."
+    }
+    
+    func hasAttendedEvent(eventId: String) -> Bool {
+        return tickets.contains(where: { $0.eventId == eventId && $0.status == .used })
+    }
 }
 
 class PanitiaViewModel: ObservableObject {
@@ -68,8 +76,6 @@ class PanitiaViewModel: ObservableObject {
     @Published var attendance: [String: [String]] = [:]
     @Published var isLoading = false
     @Published var eventMetrics: EventRecap?
-    @Published var allVendors: [User] = []
-    @Published var allCatalogItems: [VendorCatalog] = []
     
     private let firebaseService = FirebaseService.shared
     
@@ -94,42 +100,6 @@ class PanitiaViewModel: ObservableObject {
         }
     }
     
-    func createEventWithVendorItems(event: Event, vendorItems: [EventVendorItem], completion: @escaping (Bool, String?) -> Void) {
-        firebaseService.createEvent(event) { [weak self] success, error in
-            if !success {
-                completion(false, error)
-                return
-            }
-            let group = DispatchGroup()
-            for item in vendorItems {
-                group.enter()
-                self?.firebaseService.saveEventVendorItem(item) { _, _ in
-                    group.leave()
-                }
-            }
-            group.notify(queue: .main) {
-                self?.fetchManagedEvents(panitiaId: event.createdBy)
-                completion(true, nil)
-            }
-        }
-    }
-    
-    func fetchAllVendors() {
-        firebaseService.getAllVendors { [weak self] vendors, _ in
-            DispatchQueue.main.async {
-                self?.allVendors = vendors ?? []
-            }
-        }
-    }
-    
-    func fetchAllCatalogItems() {
-        firebaseService.getAllCatalogItems { [weak self] items, _ in
-            DispatchQueue.main.async {
-                self?.allCatalogItems = items ?? []
-            }
-        }
-    }
-    
     func getEventRecap(eventId: String, completion: @escaping (EventRecap?) -> Void) {
         firebaseService.getEventRecap(eventId: eventId) { recap in
             DispatchQueue.main.async {
@@ -139,18 +109,9 @@ class PanitiaViewModel: ObservableObject {
         }
     }
     
-    func recordAttendance(eventId: String, pesertaId: String, completion: @escaping (Bool) -> Void) {
-        firebaseService.recordAttendance(eventId: eventId, pesertaId: pesertaId) { success, _ in
+    func recordAttendance(eventId: String, scannedCode: String, completion: @escaping (Bool) -> Void) {
+        firebaseService.recordAttendance(eventId: eventId, scannedCode: scannedCode) { success, _ in
             completion(success)
-        }
-    }
-    @Published var eventVendorItems: [EventVendorItem] = []
-    
-    func fetchEventVendorItems(eventId: String) {
-        firebaseService.getEventVendorItems(eventId: eventId) { [weak self] items, _ in
-            DispatchQueue.main.async {
-                self?.eventVendorItems = items ?? []
-            }
         }
     }
 }
@@ -158,7 +119,6 @@ class PanitiaViewModel: ObservableObject {
 class VendorViewModel: ObservableObject {
     @Published var catalogItems: [VendorCatalog] = []
     @Published var invoices: [Invoice] = []
-    @Published var eventOrders: [EventVendorItem] = []
     @Published var isLoading = false
     
     private let firebaseService = FirebaseService.shared
@@ -177,10 +137,9 @@ class VendorViewModel: ObservableObject {
     
     func addCatalogItem(catalog: VendorCatalog, completion: @escaping (Bool, String?) -> Void) {
         firebaseService.addCatalogItem(catalog) { [weak self] success, error in
-
-            if success, let vendorId = self?.catalogItems.first?.vendorId ?? Optional(catalog.vendorId) {
-                self?.fetchCatalog(vendorId: vendorId)
-
+            if success {
+                self?.fetchCatalog(vendorId: catalog.vendorId)
+            }
             completion(success, error)
         }
     }
@@ -195,18 +154,10 @@ class VendorViewModel: ObservableObject {
         }
     }
     
-    func fetchEventOrders(vendorId: String) {
-        firebaseService.getVendorEventItems(vendorId: vendorId) { [weak self] items, _ in
-            DispatchQueue.main.async {
-                self?.eventOrders = items ?? []
-            }
-        }
-    }
-    
-    func createInvoice(invoice: Invoice, completion: @escaping (Bool, String?) -> Void) {
-        firebaseService.createInvoice(invoice) { [weak self] success, error in
+    func updateInvoiceStatus(invoiceId: String, vendorId: String, status: InvoiceStatus, completion: @escaping (Bool, String?) -> Void) {
+        firebaseService.updateInvoiceStatus(invoiceId: invoiceId, status: status) { [weak self] success, error in
             if success {
-                self?.fetchInvoices(vendorId: invoice.vendorId)
+                self?.fetchInvoices(vendorId: vendorId)
             }
             completion(success, error)
         }
@@ -214,7 +165,7 @@ class VendorViewModel: ObservableObject {
 }
 
 class AdminViewModel: ObservableObject {
-    @Published var allVendors: [User] = []
+    @Published var allVendors: [Vendor] = []
     @Published var allUsers: [User] = []
     @Published var allEvents: [Event] = []
     @Published var isLoading = false
@@ -233,50 +184,12 @@ class AdminViewModel: ObservableObject {
         }
     }
     
-    func deleteVendorUser(vendorId: String, completion: @escaping (Bool, String?) -> Void) {
-        isLoading = true
-        firebaseService.deleteVendorUser(vendorId: vendorId) { [weak self] success, error in
-            DispatchQueue.main.async {
-                if success {
-                    self?.allVendors.removeAll(where: { $0.id == vendorId })
-                }
-                self?.isLoading = false
-                completion(success, error)
-            }
-        }
-    }
-    
-    func addUser(vendor: User, completion: @escaping (Bool, String?) -> Void) {
-        firebaseService.saveUser(vendor) { success, error in
+    func addVendor(vendor: Vendor, completion: @escaping (Bool, String?) -> Void) {
+        firebaseService.addVendor(vendor) { success, error in
             if success {
                 self.fetchAllVendors()
             }
             completion(success, error)
-        }
-    }
-    
-    func fetchAllUsers() {
-        isLoading = true
-        firebaseService.getAllUsers { [weak self] users, error in
-            DispatchQueue.main.async {
-                self?.isLoading = false
-                if let users = users {
-                    self?.allUsers = users
-                }
-            }
-        }
-    }
-    
-    func deleteUser(userId: String, completion: @escaping (Bool, String?) -> Void) {
-        isLoading = true
-        firebaseService.deleteUser(userId: userId) { [weak self] success, error in
-            DispatchQueue.main.async {
-                if success {
-                    self?.allUsers.removeAll(where: { $0.id == userId })
-                }
-                self?.isLoading = false
-                completion(success, error)
-            }
         }
     }
     
